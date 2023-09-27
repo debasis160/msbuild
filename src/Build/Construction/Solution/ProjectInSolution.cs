@@ -90,19 +90,18 @@ namespace Microsoft.Build.Construction
         /// </summary>
         internal static readonly string[] projectNamesToDisambiguate = { "Build", "Rebuild", "Clean", "Publish" };
 
-        /// <summary>
-        /// Character that will be used to replace 'unclean' ones.
-        /// </summary>
-        private const char cleanCharacter = '_';
-
         #endregion
+
         #region Member data
+
         private string _relativePath;         // Relative from .SLN file.  For example, "WindowsApplication1\WindowsApplication1.csproj"
         private string _absolutePath;         // Absolute path to the project file
         private readonly List<string> _dependencies;     // A list of strings representing the Guids of the dependent projects.
         private IReadOnlyList<string> _dependenciesAsReadonly;
+        private Hashtable _aspNetConfigurations; // Lazily allocated collection, as this is rarely populated or read
         private string _uniqueProjectName;    // For example, "MySlnFolder\MySubSlnFolder\Windows_Application1"
         private string _originalProjectName;    // For example, "MySlnFolder\MySubSlnFolder\Windows.Application1"
+        private List<string> _projectReferences;
 
         /// <summary>
         /// The project configuration in given solution configuration
@@ -129,9 +128,6 @@ namespace Microsoft.Build.Construction
 
             // default to .NET Framework 3.5 if this is an old solution that doesn't explicitly say.
             TargetFrameworkMoniker = ".NETFramework,Version=v3.5";
-
-            // This hashtable stores a AspNetCompilerParameters struct for each configuration name supported.
-            AspNetConfigurations = new Hashtable(StringComparer.OrdinalIgnoreCase);
 
             _projectConfigurations = new Dictionary<string, ProjectConfigurationInSolution>(StringComparer.OrdinalIgnoreCase);
         }
@@ -243,12 +239,17 @@ namespace Microsoft.Build.Construction
         /// either specified as Dependencies above, or as ProjectReferences in the
         /// project file, which the solution doesn't have insight into. 
         /// </summary>
-        internal List<string> ProjectReferences { get; } = new List<string>();
+        internal List<string> ProjectReferences => _projectReferences ??= new();
 
         internal SolutionFile ParentSolution { get; set; }
 
         // Key is configuration name, value is [struct] AspNetCompilerParameters
-        internal Hashtable AspNetConfigurations { get; set; }
+        // This hashtable stores a AspNetCompilerParameters struct for each configuration name supported.
+        internal Hashtable AspNetConfigurations
+        {
+            get => _aspNetConfigurations ??= new Hashtable(StringComparer.OrdinalIgnoreCase);
+            set => _aspNetConfigurations = value;
+        }
 
         internal string TargetFrameworkMoniker { get; set; }
 
@@ -392,7 +393,7 @@ namespace Microsoft.Build.Construction
             if (_uniqueProjectName == null)
             {
                 // EtpSubProject and Venus projects have names that are already unique.  No need to prepend the SLN folder.
-                if ((ProjectType == SolutionProjectType.WebProject) || (ProjectType == SolutionProjectType.EtpSubProject))
+                if (ProjectType is SolutionProjectType.WebProject or SolutionProjectType.EtpSubProject)
                 {
                     _uniqueProjectName = CleanseProjectName(ProjectName);
                 }
@@ -431,7 +432,7 @@ namespace Microsoft.Build.Construction
             if (_originalProjectName == null)
             {
                 // EtpSubProject and Venus projects have names that are already unique.  No need to prepend the SLN folder.
-                if ((ProjectType == SolutionProjectType.WebProject) || (ProjectType == SolutionProjectType.EtpSubProject))
+                if (ProjectType is SolutionProjectType.WebProject or SolutionProjectType.EtpSubProject)
                 {
                     _originalProjectName = ProjectName;
                 }
@@ -487,25 +488,28 @@ namespace Microsoft.Build.Construction
         /// </summary>
         /// <param name="projectName">The name to be cleansed</param>
         /// <returns>string</returns>
-        private static string CleanseProjectName(string projectName)
+        internal static string CleanseProjectName(string projectName)
         {
             ErrorUtilities.VerifyThrow(projectName != null, "Null strings not allowed.");
 
             // If there are no special chars, just return the original string immediately.
             // Don't even instantiate the StringBuilder.
             int indexOfChar = projectName.IndexOfAny(s_charsToCleanse);
+
             if (indexOfChar == -1)
             {
+                // No illegal character exists in the name, so return the input unchanged.
                 return projectName;
             }
 
             // This is where we're going to work on the final string to return to the caller.
-            var cleanProjectName = new StringBuilder(projectName);
+            StringBuilder cleanProjectName = new(projectName);
 
-            // Replace each unclean character with a clean one            
-            foreach (char uncleanChar in s_charsToCleanse)
+            while (indexOfChar != -1)
             {
-                cleanProjectName.Replace(uncleanChar, cleanCharacter);
+                cleanProjectName[indexOfChar] = '_';
+
+                indexOfChar = projectName.IndexOfAny(s_charsToCleanse, indexOfChar + 1);
             }
 
             return cleanProjectName.ToString();

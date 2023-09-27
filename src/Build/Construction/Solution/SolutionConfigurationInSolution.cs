@@ -1,7 +1,7 @@
 ﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#nullable disable
+using System.Collections.Immutable;
 
 namespace Microsoft.Build.Construction
 {
@@ -10,13 +10,9 @@ namespace Microsoft.Build.Construction
     /// </summary>
     public sealed class SolutionConfigurationInSolution
     {
-        /// <summary>
-        /// Default separator between configuration and platform in configuration
-        /// full names
-        /// </summary>
-        internal const char ConfigurationPlatformSeparator = '|';
+        private static ImmutableDictionary<Key, string> _fullNameByKey = ImmutableDictionary<Key, string>.Empty;
 
-        internal static readonly char[] ConfigurationPlatformSeparatorArray = { '|' };
+        private string? _fullName;
 
         /// <summary>
         /// Constructor
@@ -25,7 +21,6 @@ namespace Microsoft.Build.Construction
         {
             ConfigurationName = configurationName;
             PlatformName = platformName;
-            FullName = ComputeFullName(configurationName, platformName);
         }
 
         /// <summary>
@@ -41,20 +36,26 @@ namespace Microsoft.Build.Construction
         /// <summary>
         /// The full name of this configuration - e.g. "Debug|Any CPU"
         /// </summary>
-        public string FullName { get; }
+        public string FullName => _fullName ??= ComputeFullName(ConfigurationName, PlatformName);
 
         /// <summary>
-        /// Given a configuration name and a platform name, compute the full name 
-        /// of this configuration
+        /// Given a configuration name and a platform name, compute the full name
+        /// of this configuration.
         /// </summary>
         internal static string ComputeFullName(string configurationName, string platformName)
         {
             // Some configurations don't have the platform part
-            if (!string.IsNullOrEmpty(platformName))
+            if (string.IsNullOrEmpty(platformName))
             {
-                return $"{configurationName}{ConfigurationPlatformSeparator}{platformName}";
+                return configurationName;
             }
-            return configurationName;
+
+            return ImmutableInterlocked.GetOrAdd(
+                ref _fullNameByKey,
+                new Key(configurationName, platformName),
+                static key => $"{key.Configuration}|{key.Platform}");
         }
+
+        private record struct Key(string Configuration, string Platform);
     }
 }
