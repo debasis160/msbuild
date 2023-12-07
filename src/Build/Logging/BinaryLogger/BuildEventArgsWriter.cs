@@ -14,6 +14,8 @@ using Microsoft.Build.Execution;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Framework.Profiler;
 using Microsoft.Build.Shared;
+using Microsoft.Build.Utilities;
+using Microsoft.NET.StringTools;
 
 #nullable disable
 
@@ -198,12 +200,31 @@ namespace Microsoft.Build.Logging
                 default:
                     // convert all unrecognized objects to message
                     // and just preserve the message
-                    var buildMessageEventArgs = new BuildMessageEventArgs(
-                        e.Message,
-                        e.HelpKeyword,
-                        e.SenderName,
-                        MessageImportance.Normal,
-                        e.Timestamp);
+                    BuildMessageEventArgs buildMessageEventArgs;
+                    if (e is IExtendedBuildEventArgs extendedData)
+                    {
+                        // For Extended events convert to ExtendedBuildMessageEventArgs
+                        buildMessageEventArgs = new ExtendedBuildMessageEventArgs(
+                            extendedData.ExtendedType,
+                            e.Message,
+                            e.HelpKeyword,
+                            e.SenderName,
+                            MessageImportance.Normal,
+                            e.Timestamp)
+                        {
+                            ExtendedData = extendedData.ExtendedData,
+                            ExtendedMetadata = extendedData.ExtendedMetadata,
+                        };
+                    }
+                    else
+                    {
+                        buildMessageEventArgs = new BuildMessageEventArgs(
+                            e.Message,
+                            e.HelpKeyword,
+                            e.SenderName,
+                            MessageImportance.Normal,
+                            e.Timestamp);
+                    }
                     buildMessageEventArgs.BuildEventContext = e.BuildEventContext ?? BuildEventContext.Invalid;
                     Write(buildMessageEventArgs);
                     break;
@@ -610,6 +631,11 @@ namespace Microsoft.Build.Logging
             {
                 Write(e.Timestamp);
             }
+
+            if ((flags & BuildEventArgsFieldFlags.Extended) != 0)
+            {
+                Write(e as IExtendedBuildEventArgs);
+            }
         }
 
         private void WriteMessageFields(BuildMessageEventArgs e, bool writeMessage = true, bool writeImportance = false)
@@ -773,6 +799,11 @@ namespace Microsoft.Build.Logging
             if (e.Timestamp != default(DateTime))
             {
                 flags |= BuildEventArgsFieldFlags.Timestamp;
+            }
+
+            if (e is IExtendedBuildEventArgs extendedData)
+            {
+                flags |= BuildEventArgsFieldFlags.Extended;
             }
 
             return flags;
@@ -1218,11 +1249,21 @@ namespace Microsoft.Build.Logging
             Write(e.InclusiveTime);
         }
 
+        private void Write(IExtendedBuildEventArgs extendedData)
+        {
+            if (extendedData?.ExtendedType != null)
+            {
+                WriteDeduplicatedString(extendedData.ExtendedType);
+                Write(extendedData.ExtendedMetadata);
+                WriteDeduplicatedString(extendedData.ExtendedData);
+            }
+        }
+
         internal readonly struct HashKey : IEquatable<HashKey>
         {
-            private readonly ulong value;
+            private readonly long value;
 
-            private HashKey(ulong i)
+            private HashKey(long i)
             {
                 value = i;
             }
@@ -1235,13 +1276,13 @@ namespace Microsoft.Build.Logging
                 }
                 else
                 {
-                    value = FnvHash64.GetHashCode(text);
+                    value = FowlerNollVo1aHash.ComputeHash64Fast(text);
                 }
             }
 
             public static HashKey Combine(HashKey left, HashKey right)
             {
-                return new HashKey(FnvHash64.Combine(left.value, right.value));
+                return new HashKey(FowlerNollVo1aHash.Combine64(left.value, right.value));
             }
 
             public HashKey Add(HashKey other) => Combine(this, other);
@@ -1269,36 +1310,6 @@ namespace Microsoft.Build.Logging
             public override string ToString()
             {
                 return value.ToString();
-            }
-        }
-
-        internal static class FnvHash64
-        {
-            public const ulong Offset = 14695981039346656037;
-            public const ulong Prime = 1099511628211;
-
-            public static ulong GetHashCode(string text)
-            {
-                ulong hash = Offset;
-
-                unchecked
-                {
-                    for (int i = 0; i < text.Length; i++)
-                    {
-                        char ch = text[i];
-                        hash = (hash ^ ch) * Prime;
-                    }
-                }
-
-                return hash;
-            }
-
-            public static ulong Combine(ulong left, ulong right)
-            {
-                unchecked
-                {
-                    return (left ^ right) * Prime;
-                }
             }
         }
     }
