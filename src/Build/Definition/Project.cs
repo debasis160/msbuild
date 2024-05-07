@@ -3732,7 +3732,8 @@ namespace Microsoft.Build.Evaluation
                     evaluationContext.SdkResolverService,
                     BuildEventContext.InvalidSubmissionId,
                     evaluationContext,
-                    _interactive);
+                    _interactive,
+                    buildCheckEnabled: false);
 
                 ErrorUtilities.VerifyThrow(LastEvaluationId != BuildEventContext.InvalidEvaluationId, "Evaluation should produce an evaluation ID");
 
@@ -4263,7 +4264,7 @@ namespace Microsoft.Build.Evaluation
             /// <summary>
             /// Prepares the data object for evaluation.
             /// </summary>
-            public void InitializeForEvaluation(IToolsetProvider toolsetProvider, EvaluationContext evaluationContext)
+            public void InitializeForEvaluation(IToolsetProvider toolsetProvider, EvaluationContext evaluationContext, LoggingContext loggingContext)
             {
                 DefaultTargets = null;
                 Properties = new PropertyDictionary<ProjectProperty>();
@@ -4271,7 +4272,7 @@ namespace Microsoft.Build.Evaluation
                 Items = new ItemDictionary<ProjectItem>();
                 ItemsIgnoringCondition = new ItemDictionary<ProjectItem>();
                 ItemsByEvaluatedIncludeCache = new MultiDictionary<string, ProjectItem>(StringComparer.OrdinalIgnoreCase);
-                Expander = new Expander<ProjectProperty, ProjectItem>(Properties, Items, evaluationContext);
+                Expander = new Expander<ProjectProperty, ProjectItem>(Properties, Items, evaluationContext, loggingContext);
                 ItemDefinitions = new RetrievableEntryHashSet<ProjectItemDefinition>(MSBuildNameIgnoreCaseComparer.Default);
                 Targets = new RetrievableEntryHashSet<ProjectTargetInstance>(StringComparer.OrdinalIgnoreCase);
                 ImportClosure = new List<ResolvedImport>();
@@ -4281,7 +4282,7 @@ namespace Microsoft.Build.Evaluation
                 AllEvaluatedItems = new List<ProjectItem>();
                 EvaluatedItemElements = new List<ProjectItemElement>();
                 EvaluationId = BuildEventContext.InvalidEvaluationId;
-
+                
                 _globalPropertiesToTreatAsLocal?.Clear();
 
                 // Include the main project in the list of imports, as this list is
@@ -4445,9 +4446,13 @@ namespace Microsoft.Build.Evaluation
                 Properties.Set(property);
 
                 AddToAllEvaluatedPropertiesList(property);
-
                 return property;
             }
+
+            ProjectProperty IEvaluatorData<ProjectProperty, ProjectItem, ProjectMetadata, ProjectItemDefinition>.
+                SetProperty(ProjectPropertyElement propertyElement, string evaluatedValueEscaped,
+                    LoggingContext loggingContext) =>
+                SetProperty(propertyElement, evaluatedValueEscaped);
 
             /// <summary>
             /// Sets a property derived from Xml.

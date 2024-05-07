@@ -12,6 +12,7 @@ using System.Xml;
 
 using Microsoft.Build.Collections;
 using Microsoft.Build.Construction;
+using Microsoft.Build.Engine.UnitTests;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Execution;
 using Microsoft.Build.Framework;
@@ -32,6 +33,8 @@ namespace Microsoft.Build.UnitTests.Evaluation
     /// </summary>
     public class Evaluator_Tests : IDisposable
     {
+        private readonly bool _savedState;
+
         /// <summary>
         /// Cleanup
         /// </summary>
@@ -39,6 +42,8 @@ namespace Microsoft.Build.UnitTests.Evaluation
         {
             ProjectCollection.GlobalProjectCollection.UnloadAllProjects();
             GC.Collect();
+            _savedState = BuildEnvironmentState.s_runningTests;
+            BuildEnvironmentState.s_runningTests = true;
         }
 
         /// <summary>
@@ -48,6 +53,7 @@ namespace Microsoft.Build.UnitTests.Evaluation
         {
             ProjectCollection.GlobalProjectCollection.UnloadAllProjects();
             GC.Collect();
+            BuildEnvironmentState.s_runningTests = _savedState;
         }
 
         [Theory]
@@ -4385,9 +4391,8 @@ namespace Microsoft.Build.UnitTests.Evaluation
                     ExpanderOptions.ExpandProperties,
                     Directory.GetCurrentDirectory(),
                     MockElementLocation.Instance,
-                    null,
-                    new BuildEventContext(1, 2, 3, 4),
-                    FileSystems.Default);
+                    FileSystems.Default,
+                    new TestLoggingContext(null!, new BuildEventContext(1, 2, 3, 4)));
                 Assert.True(false, "Expect exception due to the value of property \"TargetOSFamily\" is not a number.");
             }
             catch (InvalidProjectFileException e)
@@ -4404,9 +4409,8 @@ namespace Microsoft.Build.UnitTests.Evaluation
                 ExpanderOptions.ExpandProperties,
                 Directory.GetCurrentDirectory(),
                 MockElementLocation.Instance,
-                null,
-                new BuildEventContext(1, 2, 3, 4),
-                FileSystems.Default));
+                FileSystems.Default,
+                new TestLoggingContext(null!, new BuildEventContext(1, 2, 3, 4))));
         }
 
         /// <summary>
@@ -4991,7 +4995,6 @@ namespace Microsoft.Build.UnitTests.Evaluation
                       && r.Message.StartsWith($"{
                           ResourceUtilities.FormatResourceStringIgnoreCodeAndKeyword(
                               "PropertyReassignment", propertyName, propertyNewValue, propertyOldValue, string.Empty)}"));
-                logger.BuildMessageEvents.ShouldBeOfTypes(new[] { typeof(PropertyReassignmentEventArgs) });
             }
         }
 

@@ -5,6 +5,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
@@ -12,7 +13,10 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
+using Microsoft.Build.BackEnd;
+using Microsoft.Build.BackEnd.Components.Logging;
 using Microsoft.Build.BackEnd.Logging;
+using Microsoft.Build.BuildCheck.Infrastructure;
 using Microsoft.Build.Collections;
 using Microsoft.Build.Evaluation.Context;
 using Microsoft.Build.Execution;
@@ -22,6 +26,7 @@ using Microsoft.Build.Shared;
 using Microsoft.Build.Shared.FileSystem;
 using Microsoft.NET.StringTools;
 using Microsoft.Win32;
+using static Microsoft.Build.Evaluation.ToolsetElement;
 using AvailableStaticMethods = Microsoft.Build.Internal.AvailableStaticMethods;
 using ReservedPropertyNames = Microsoft.Build.Internal.ReservedPropertyNames;
 using TaskItem = Microsoft.Build.Execution.ProjectItemInstance.TaskItem;
@@ -307,7 +312,7 @@ namespace Microsoft.Build.Evaluation
         /// <summary>
         /// Set of properties which are null during expansion.
         /// </summary>
-        private UsedUninitializedProperties _usedUninitializedProperties;
+        private PropertiesUsageTracker _propertiesUsageTracker;
 
         private readonly IFileSystem _fileSystem;
 
@@ -318,25 +323,42 @@ namespace Microsoft.Build.Evaluation
         /// </summary>
         internal EvaluationContext EvaluationContext { get; }
 
+        private Expander(IPropertyProvider<P> properties, LoggingContext loggingContext)
+        {
+            _properties = properties;
+            _propertiesUsageTracker = new PropertiesUsageTracker(loggingContext);
+            _loggingContext = loggingContext;
+        }
+
         /// <summary>
         /// Creates an expander passing it some properties to use.
         /// Properties may be null.
         /// </summary>
-        internal Expander(IPropertyProvider<P> properties, IFileSystem fileSystem)
+        internal Expander(IPropertyProvider<P> properties, IFileSystem fileSystem, LoggingContext loggingContext)
+            : this(properties, loggingContext)
         {
-            _properties = properties;
-            _usedUninitializedProperties = new UsedUninitializedProperties();
             _fileSystem = fileSystem;
         }
+
+        /// <summary>
+        /// Creates an expander passing it some properties to use.
+        /// Properties may be null.
+        ///
+        /// Used for tests and for ToolsetReader - that operates agnostic on the project
+        ///   - so no logging context is passed, and no BuildCheck analysis will be executed.
+        /// </summary>
+        internal Expander(IPropertyProvider<P> properties, IFileSystem fileSystem)
+        : this(properties, fileSystem, null)
+        { }
 
         /// <summary>
         /// Creates an expander passing it some properties to use and the evaluation context.
         /// Properties may be null.
         /// </summary>
-        internal Expander(IPropertyProvider<P> properties, EvaluationContext evaluationContext)
+        internal Expander(IPropertyProvider<P> properties, EvaluationContext evaluationContext,
+            LoggingContext loggingContext)
+            : this(properties, loggingContext)
         {
-            _properties = properties;
-            _usedUninitializedProperties = new UsedUninitializedProperties();
             _fileSystem = evaluationContext.FileSystem;
             EvaluationContext = evaluationContext;
         }
@@ -345,8 +367,8 @@ namespace Microsoft.Build.Evaluation
         /// Creates an expander passing it some properties and items to use.
         /// Either or both may be null.
         /// </summary>
-        internal Expander(IPropertyProvider<P> properties, IItemProvider<I> items, IFileSystem fileSystem)
-            : this(properties, fileSystem)
+        internal Expander(IPropertyProvider<P> properties, IItemProvider<I> items, IFileSystem fileSystem, LoggingContext loggingContext)
+            : this(properties, fileSystem, loggingContext)
         {
             _items = items;
         }
@@ -356,45 +378,57 @@ namespace Microsoft.Build.Evaluation
         /// Creates an expander passing it some properties and items to use, and the evaluation context.
         /// Either or both may be null.
         /// </summary>
-        internal Expander(IPropertyProvider<P> properties, IItemProvider<I> items, EvaluationContext evaluationContext)
-            : this(properties, evaluationContext)
-        {
-            _items = items;
-        }
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="Expander{P, I}"/> class with the specified property provider, item provider, evaluation context, and logging context.
-        /// </summary>
-        /// <param name="properties">The property provider supplying properties for expansion.</param>
-        /// <param name="items">The item provider supplying items for expansion.</param>
-        /// <param name="evaluationContext">The evaluation context used during expansion.</param>
-        /// <param name="loggingContext">The logging context used for logging or emmitting events during expansion.</param>
-        /// <exception cref="ArgumentNullException">Thrown when either <paramref name="properties"/> or <paramref name="evaluationContext"/> is null.</exception>
         internal Expander(IPropertyProvider<P> properties, IItemProvider<I> items, EvaluationContext evaluationContext, LoggingContext loggingContext)
-            : this(properties, evaluationContext)
+            : this(properties, evaluationContext, loggingContext)
         {
             _items = items;
-            _loggingContext = loggingContext;
         }
 
         /// <summary>
         /// Creates an expander passing it some properties, items, and/or metadata to use.
         /// Any or all may be null.
         /// </summary>
-        internal Expander(IPropertyProvider<P> properties, IItemProvider<I> items, IMetadataTable metadata, IFileSystem fileSystem)
-            : this(properties, items, fileSystem)
+        internal Expander(IPropertyProvider<P> properties, IItemProvider<I> items, IMetadataTable metadata, IFileSystem fileSystem, LoggingContext loggingContext)
+            : this(properties, items, fileSystem, loggingContext)
         {
             _metadata = metadata;
         }
 
         /// <summary>
-        /// Whether to warn when we set a property for the first time, after it was previously used.
-        /// Default is false, unless MSBUILDWARNONUNINITIALIZEDPROPERTY is set.
+        /// Creates an expander passing it some properties, items, and/or metadata to use.
+        /// Any or all may be null.
+        ///
+        /// This is for the purpose of evaluations through API calls, that might not be able to pass the logging context
+        ///  - BuildCheck analysis won't be executed for those.
+        /// (for one of the calls we can actually pass IDataConsumingContext - as we have logging service and project)
+        /// 
         /// </summary>
-        internal bool WarnForUninitializedProperties
+        internal Expander(IPropertyProvider<P> properties, IItemProvider<I> items, IMetadataTable metadata, IFileSystem fileSystem)
+            : this(properties, items, fileSystem, null)
         {
-            get { return _usedUninitializedProperties.Warn; }
-            set { _usedUninitializedProperties.Warn = value; }
+            _metadata = metadata;
+        }
+
+        private Expander(
+            IPropertyProvider<P> properties,
+            IItemProvider<I> items,
+            IMetadataTable metadata,
+            IFileSystem fileSystem,
+            EvaluationContext evaluationContext,
+            LoggingContext loggingContext)
+            : this(properties, items, metadata, fileSystem, loggingContext)
+        {
+            EvaluationContext = evaluationContext;
+        }
+
+        /// <summary>
+        /// Recreates the expander with passed in logging context
+        /// </summary>
+        /// <param name="loggingContext"></param>
+        /// <returns></returns>
+        internal Expander<P, I> WithLoggingContext(LoggingContext loggingContext)
+        {
+            return new Expander<P, I>(_properties, _items, _metadata, _fileSystem, EvaluationContext, loggingContext);
         }
 
         /// <summary>
@@ -411,10 +445,10 @@ namespace Microsoft.Build.Evaluation
         /// If a property is expanded but evaluates to null then it is considered to be un-initialized.
         /// We want to keep track of these properties so that we can warn if the property gets set later on.
         /// </summary>
-        internal UsedUninitializedProperties UsedUninitializedProperties
+        internal PropertiesUsageTracker PropertiesUsageTracker
         {
-            get { return _usedUninitializedProperties; }
-            set { _usedUninitializedProperties = value; }
+            get { return _propertiesUsageTracker; }
+            set { _propertiesUsageTracker = value; }
         }
 
         /// <summary>
@@ -443,9 +477,9 @@ namespace Microsoft.Build.Evaluation
         ///
         /// If ExpanderOptions.BreakOnNotEmpty was passed, expression was going to be non-empty, and it broke out early, returns null. Otherwise the result can be trusted.
         /// </summary>
-        internal string ExpandIntoStringAndUnescape(string expression, ExpanderOptions options, IElementLocation elementLocation, LoggingContext loggingContext = null)
+        internal string ExpandIntoStringAndUnescape(string expression, ExpanderOptions options, IElementLocation elementLocation)
         {
-            string result = ExpandIntoStringLeaveEscaped(expression, options, elementLocation, loggingContext);
+            string result = ExpandIntoStringLeaveEscaped(expression, options, elementLocation);
 
             return (result == null) ? null : EscapingUtilities.UnescapeAll(result);
         }
@@ -457,7 +491,7 @@ namespace Microsoft.Build.Evaluation
         ///
         /// If ExpanderOptions.BreakOnNotEmpty was passed, expression was going to be non-empty, and it broke out early, returns null. Otherwise the result can be trusted.
         /// </summary>
-        internal string ExpandIntoStringLeaveEscaped(string expression, ExpanderOptions options, IElementLocation elementLocation, LoggingContext loggingContext = null)
+        internal string ExpandIntoStringLeaveEscaped(string expression, ExpanderOptions options, IElementLocation elementLocation)
         {
             if (expression.Length == 0)
             {
@@ -466,8 +500,8 @@ namespace Microsoft.Build.Evaluation
 
             ErrorUtilities.VerifyThrowInternalNull(elementLocation, nameof(elementLocation));
 
-            string result = MetadataExpander.ExpandMetadataLeaveEscaped(expression, _metadata, options, elementLocation, loggingContext);
-            result = PropertyExpander<P>.ExpandPropertiesLeaveEscaped(result, _properties, options, elementLocation, _usedUninitializedProperties, _fileSystem, loggingContext);
+            string result = MetadataExpander.ExpandMetadataLeaveEscaped(expression, _metadata, options, elementLocation, _loggingContext);
+            result = PropertyExpander<P>.ExpandPropertiesLeaveEscaped(result, _properties, options, elementLocation, _propertiesUsageTracker, _fileSystem);
             result = ItemExpander.ExpandItemVectorsIntoString<I>(this, result, _items, options, elementLocation);
             result = FileUtilities.MaybeAdjustFilePath(result);
 
@@ -488,7 +522,7 @@ namespace Microsoft.Build.Evaluation
             ErrorUtilities.VerifyThrowInternalNull(elementLocation, nameof(elementLocation));
 
             string metaExpanded = MetadataExpander.ExpandMetadataLeaveEscaped(expression, _metadata, options, elementLocation);
-            return PropertyExpander<P>.ExpandPropertiesLeaveTypedAndEscaped(metaExpanded, _properties, options, elementLocation, _usedUninitializedProperties, _fileSystem);
+            return PropertyExpander<P>.ExpandPropertiesLeaveTypedAndEscaped(metaExpanded, _properties, options, elementLocation, _propertiesUsageTracker, _fileSystem);
         }
 
         /// <summary>
@@ -497,11 +531,11 @@ namespace Microsoft.Build.Evaluation
         /// Use this form when the result is going to be processed further, for example by matching against the file system,
         /// so literals must be distinguished, and you promise to unescape after that.
         /// </summary>
-        internal SemiColonTokenizer ExpandIntoStringListLeaveEscaped(string expression, ExpanderOptions options, IElementLocation elementLocation, LoggingContext loggingContext = null)
+        internal SemiColonTokenizer ExpandIntoStringListLeaveEscaped(string expression, ExpanderOptions options, IElementLocation elementLocation)
         {
             ErrorUtilities.VerifyThrow((options & ExpanderOptions.BreakOnNotEmpty) == 0, "not supported");
 
-            return ExpressionShredder.SplitSemiColonSeparatedList(ExpandIntoStringLeaveEscaped(expression, options, elementLocation, loggingContext));
+            return ExpressionShredder.SplitSemiColonSeparatedList(ExpandIntoStringLeaveEscaped(expression, options, elementLocation));
         }
 
         /// <summary>
@@ -536,7 +570,7 @@ namespace Microsoft.Build.Evaluation
             ErrorUtilities.VerifyThrowInternalNull(elementLocation, nameof(elementLocation));
 
             expression = MetadataExpander.ExpandMetadataLeaveEscaped(expression, _metadata, options, elementLocation);
-            expression = PropertyExpander<P>.ExpandPropertiesLeaveEscaped(expression, _properties, options, elementLocation, _usedUninitializedProperties, _fileSystem);
+            expression = PropertyExpander<P>.ExpandPropertiesLeaveEscaped(expression, _properties, options, elementLocation, _propertiesUsageTracker, _fileSystem);
             expression = FileUtilities.MaybeAdjustFilePath(expression);
 
             List<T> result = new List<T>();
@@ -1121,9 +1155,8 @@ namespace Microsoft.Build.Evaluation
                 IPropertyProvider<T> properties,
                 ExpanderOptions options,
                 IElementLocation elementLocation,
-                UsedUninitializedProperties usedUninitializedProperties,
-                IFileSystem fileSystem,
-                LoggingContext loggingContext = null)
+                PropertiesUsageTracker propertiesUsageTracker,
+                IFileSystem fileSystem)
             {
                 return
                     ConvertToString(
@@ -1132,9 +1165,8 @@ namespace Microsoft.Build.Evaluation
                             properties,
                             options,
                             elementLocation,
-                            usedUninitializedProperties,
-                            fileSystem,
-                            loggingContext));
+                            propertiesUsageTracker,
+                            fileSystem));
             }
 
             /// <summary>
@@ -1159,9 +1191,8 @@ namespace Microsoft.Build.Evaluation
                 IPropertyProvider<T> properties,
                 ExpanderOptions options,
                 IElementLocation elementLocation,
-                UsedUninitializedProperties usedUninitializedProperties,
-                IFileSystem fileSystem,
-                LoggingContext loggingContext = null)
+                PropertiesUsageTracker propertiesUsageTracker,
+                IFileSystem fileSystem)
             {
                 if (((options & ExpanderOptions.ExpandProperties) == 0) || String.IsNullOrEmpty(expression))
                 {
@@ -1270,13 +1301,12 @@ namespace Microsoft.Build.Evaluation
                                 properties,
                                 options,
                                 elementLocation,
-                                usedUninitializedProperties,
-                                fileSystem,
-                                loggingContext);
+                                propertiesUsageTracker,
+                                fileSystem);
                         }
                         else // This is a regular property
                         {
-                            propertyValue = LookupProperty(properties, expression, propertyStartIndex + 2, propertyEndIndex - 1, elementLocation, usedUninitializedProperties, loggingContext);
+                            propertyValue = LookupProperty(properties, expression, propertyStartIndex + 2, propertyEndIndex - 1, elementLocation, propertiesUsageTracker);
                         }
 
                         if (propertyValue != null)
@@ -1319,9 +1349,8 @@ namespace Microsoft.Build.Evaluation
                 IPropertyProvider<T> properties,
                 ExpanderOptions options,
                 IElementLocation elementLocation,
-                UsedUninitializedProperties usedUninitializedProperties,
-                IFileSystem fileSystem,
-                LoggingContext loggingContext)
+                PropertiesUsageTracker propertiesUsageTracker,
+                IFileSystem fileSystem)
             {
                 Function<T> function = null;
                 string propertyName = propertyBody;
@@ -1351,9 +1380,9 @@ namespace Microsoft.Build.Evaluation
                             propertyBody,
                             elementLocation,
                             propertyValue,
-                            usedUninitializedProperties,
+                            propertiesUsageTracker,
                             fileSystem,
-                            loggingContext);
+                            propertiesUsageTracker.LoggingContext);
 
                         // We may not have been able to parse out a function
                         if (function != null)
@@ -1381,7 +1410,7 @@ namespace Microsoft.Build.Evaluation
                         }
                         else
                         {
-                            propertyValue = LookupProperty(properties, propertyBody, 0, indexerStart - 1, elementLocation, usedUninitializedProperties);
+                            propertyValue = LookupProperty(properties, propertyBody, 0, indexerStart - 1, elementLocation, propertiesUsageTracker);
                             propertyBody = propertyBody.Substring(indexerStart);
 
                             // recurse so that the function representing the indexer can be executed on the property value
@@ -1391,9 +1420,8 @@ namespace Microsoft.Build.Evaluation
                                 properties,
                                 options,
                                 elementLocation,
-                                usedUninitializedProperties,
-                                fileSystem,
-                                loggingContext);
+                                propertiesUsageTracker,
+                                fileSystem);
                         }
                     }
                     else
@@ -1410,7 +1438,7 @@ namespace Microsoft.Build.Evaluation
                 // doesn't exist in the collection, and we're not executing a static function
                 if (!String.IsNullOrEmpty(propertyName))
                 {
-                    propertyValue = LookupProperty(properties, propertyName, elementLocation, usedUninitializedProperties);
+                    propertyValue = LookupProperty(properties, propertyName, elementLocation, propertiesUsageTracker);
                 }
 
                 if (function != null)
@@ -1517,21 +1545,26 @@ namespace Microsoft.Build.Evaluation
             /// <summary>
             /// Look up a simple property reference by the name of the property, e.g. "Foo" when expanding $(Foo).
             /// </summary>
-            private static object LookupProperty(IPropertyProvider<T> properties, string propertyName, IElementLocation elementLocation, UsedUninitializedProperties usedUninitializedProperties)
+            private static object LookupProperty(IPropertyProvider<T> properties, string propertyName, IElementLocation elementLocation, PropertiesUsageTracker propertiesUsageTracker)
             {
-                return LookupProperty(properties, propertyName, 0, propertyName.Length - 1, elementLocation, usedUninitializedProperties);
+                return LookupProperty(properties, propertyName, 0, propertyName.Length - 1, elementLocation, propertiesUsageTracker);
             }
 
             /// <summary>
             /// Look up a simple property reference by the name of the property, e.g. "Foo" when expanding $(Foo).
             /// </summary>
-            private static object LookupProperty(IPropertyProvider<T> properties, string propertyName, int startIndex, int endIndex, IElementLocation elementLocation, UsedUninitializedProperties usedUninitializedProperties, LoggingContext loggingContext = null)
+            private static object LookupProperty(IPropertyProvider<T> properties, string propertyName, int startIndex, int endIndex, IElementLocation elementLocation, PropertiesUsageTracker propertiesUsageTracker)
             {
                 T property = properties.GetProperty(propertyName, startIndex, endIndex);
 
                 object propertyValue;
 
-                if (property == null && ((endIndex - startIndex) >= 7) && MSBuildNameIgnoreCaseComparer.Default.Equals("MSBuild", propertyName, startIndex, 7))
+                bool isArtifical = property == null && ((endIndex - startIndex) >= 7) &&
+                                   MSBuildNameIgnoreCaseComparer.Default.Equals("MSBuild", propertyName, startIndex, 7);
+
+                propertiesUsageTracker.TrackRead(propertyName, startIndex, endIndex, elementLocation, property == null, isArtifical);
+                
+                if (isArtifical)
                 {
                     // It could be one of the MSBuildThisFileXXXX properties,
                     // whose values vary according to the file they are in.
@@ -1546,31 +1579,13 @@ namespace Microsoft.Build.Evaluation
                 }
                 else if (property == null)
                 {
-                    // We have evaluated a property to null. We now need to see if we need to add it to the list of properties which are used before they have been initialized
-                    //
-                    // We also do not want to add the property to the list if the environment variable is not set, also we do not want to add the property to the list if we are currently
-                    // evaluating a condition because a common pattern for msbuild projects is to see if the property evaluates to empty and then set a value as this would cause a considerable number of false positives.   <A Condition="'$(A)' == ''">default</A>
-                    //
-                    // Another pattern used is where a property concatenates with other values,  <a>$(a);something</a> however we do not want to add the a element to the list because again this would make a number of
-                    // false positives. Therefore we check to see what element we are currently evaluating and if it is the same as our property we do not add the property to the list.
-                    if (usedUninitializedProperties.Warn && usedUninitializedProperties.CurrentlyEvaluatingPropertyElementName != null)
-                    {
-                        // Check to see if the property name does not match the property we are currently evaluating, note the property we are currently evaluating in the element name, this means no $( or )
-                        if (!MSBuildNameIgnoreCaseComparer.Default.Equals(usedUninitializedProperties.CurrentlyEvaluatingPropertyElementName, propertyName, startIndex, endIndex - startIndex + 1))
-                        {
-                            usedUninitializedProperties.TryAdd(
-                                propertyName: propertyName.Substring(startIndex, endIndex - startIndex + 1),
-                                elementLocation);
-                        }
-                    }
-
                     propertyValue = String.Empty;
                 }
                 else
                 {
                     if (property is ProjectPropertyInstance.EnvironmentDerivedProjectPropertyInstance environmentDerivedProperty)
                     {
-                        environmentDerivedProperty.loggingContext = loggingContext;
+                        environmentDerivedProperty.loggingContext = propertiesUsageTracker.LoggingContext;
                     }
 
                     propertyValue = property.EvaluatedValueEscaped;
@@ -2755,7 +2770,7 @@ namespace Microsoft.Build.Evaluation
                             arguments,
                             BindingFlags.Public | BindingFlags.InvokeMethod,
                             string.Empty,
-                            expander.UsedUninitializedProperties,
+                            expander.PropertiesUsageTracker,
                             expander._fileSystem,
                             expander._loggingContext);
 
@@ -3187,7 +3202,7 @@ namespace Microsoft.Build.Evaluation
             /// <summary>
             /// List of properties which have been used but have not been initialized yet.
             /// </summary>
-            public UsedUninitializedProperties UsedUninitializedProperties { get; set; }
+            public PropertiesUsageTracker PropertiesUsageTracker { get; set; }
 
             internal readonly Function<T> Build()
             {
@@ -3199,7 +3214,7 @@ namespace Microsoft.Build.Evaluation
                     Arguments,
                     BindingFlags,
                     Remainder,
-                    UsedUninitializedProperties,
+                    PropertiesUsageTracker,
                     FileSystem,
                     LoggingContext);
             }
@@ -3251,7 +3266,7 @@ namespace Microsoft.Build.Evaluation
             /// <summary>
             /// List of properties which have been used but have not been initialized yet.
             /// </summary>
-            private readonly UsedUninitializedProperties _usedUninitializedProperties;
+            private PropertiesUsageTracker _propertiesUsageTracker;
 
             private readonly IFileSystem _fileSystem;
 
@@ -3268,7 +3283,7 @@ namespace Microsoft.Build.Evaluation
                 string[] arguments,
                 BindingFlags bindingFlags,
                 string remainder,
-                UsedUninitializedProperties usedUninitializedProperties,
+                PropertiesUsageTracker propertiesUsageTracker,
                 IFileSystem fileSystem,
                 LoggingContext loggingContext)
             {
@@ -3287,7 +3302,7 @@ namespace Microsoft.Build.Evaluation
                 _receiverType = receiverType;
                 _bindingFlags = bindingFlags;
                 _remainder = remainder;
-                _usedUninitializedProperties = usedUninitializedProperties;
+                _propertiesUsageTracker = propertiesUsageTracker;
                 _fileSystem = fileSystem;
                 _loggingContext = loggingContext;
             }
@@ -3311,7 +3326,7 @@ namespace Microsoft.Build.Evaluation
                 string expressionFunction,
                 IElementLocation elementLocation,
                 object propertyValue,
-                UsedUninitializedProperties usedUnInitializedProperties,
+                PropertiesUsageTracker propertiesUsageTracker,
                 IFileSystem fileSystem,
                 LoggingContext loggingContext)
             {
@@ -3335,7 +3350,7 @@ namespace Microsoft.Build.Evaluation
                 ProjectErrorUtilities.VerifyThrowInvalidProject(!expressionRoot.IsEmpty, elementLocation, "InvalidFunctionPropertyExpression", expressionFunction, String.Empty);
 
                 functionBuilder.Expression = expressionFunction;
-                functionBuilder.UsedUninitializedProperties = usedUnInitializedProperties;
+                functionBuilder.PropertiesUsageTracker = propertiesUsageTracker;
 
                 // This is a static method call
                 // A static method is the content that follows the last "::", the rest being the type
@@ -3487,7 +3502,7 @@ namespace Microsoft.Build.Evaluation
                             properties,
                             options,
                             elementLocation,
-                            _usedUninitializedProperties,
+                            _propertiesUsageTracker,
                             _fileSystem);
 
                         if (argument is string argumentValue)
@@ -3621,9 +3636,8 @@ namespace Microsoft.Build.Evaluation
                         properties,
                         options,
                         elementLocation,
-                        _usedUninitializedProperties,
-                        _fileSystem,
-                        _loggingContext);
+                        _propertiesUsageTracker,
+                        _fileSystem);
                 }
 
                 // Exceptions coming from the actual function called are wrapped in a TargetInvocationException
@@ -5493,12 +5507,84 @@ namespace Microsoft.Build.Evaluation
     /// <summary>
     /// This class wraps information about properties which have been used before they are initialized.
     /// </summary>
-    internal sealed class UsedUninitializedProperties
+    internal sealed class PropertiesUsageTracker
     {
+        internal LoggingContext LoggingContext { get; init; }
+
+        public PropertiesUsageTracker(LoggingContext loggingContext) => LoggingContext = loggingContext;
+
+        /// <summary>
+        /// Whether to warn when we set a property for the first time, after it was previously used.
+        /// Default is false, unless MSBUILDWARNONUNINITIALIZEDPROPERTY is set.
+        /// </summary>
+        // This setting may change after the build has started, therefore if the user has not set the property to true on the build parameters we need to check to see if it is set to true on the environment variable.
+        private bool _warnForUninitializedProperties = BuildParameters.WarnOnUninitializedProperty || Traits.Instance.EscapeHatches.WarnOnUninitializedProperty;
+
         /// <summary>
         /// Lazily allocated collection of properties and the element which used them.
         /// </summary>
         private Dictionary<string, IElementLocation>? _properties;
+
+        internal void TrackRead(string propertyName, int startIndex, int endIndex, IElementLocation elementLocation, bool isUninitialized, bool isArtificial, LoggingContext? loggingContext = null)
+        {
+            if (isArtificial)
+            {
+                return;
+            }
+
+            // TODO: This might get executed even before the logging service and BuildComponentCollections
+            //  are initialized (for the toolset initialization)
+
+            if (BuildCheckManagerProvider.GlobalBuildEngineDataConsumer is not null && (loggingContext ?? LoggingContext) is null)
+            {
+                Debugger.Launch();
+            }
+
+            // We are collecting the read data here - instead of in the PropertyTrackingEvaluatorDataWrapper
+            //  because that one is used only during evaluation, however already not from within Targets
+            BuildCheckManagerProvider.GlobalBuildEngineDataConsumer?.ProcessPropertyRead(
+                propertyName, startIndex, endIndex,
+                elementLocation, isUninitialized, GetPropertyReadContext(propertyName, startIndex, endIndex),
+                (loggingContext ?? LoggingContext)?.BuildEventContext);
+
+            if (!isUninitialized)
+            {
+                return;
+            }
+
+            // We have evaluated a property to null. We now need to see if we need to add it to the list of properties which are used before they have been initialized
+            //
+            // We also do not want to add the property to the list if the environment variable is not set, also we do not want to add the property to the list if we are currently
+            // evaluating a condition because a common pattern for msbuild projects is to see if the property evaluates to empty and then set a value as this would cause a considerable number of false positives.   <A Condition="'$(A)' == ''">default</A>
+            //
+            // Another pattern used is where a property concatenates with other values,  <a>$(a);something</a> however we do not want to add the a element to the list because again this would make a number of
+            // false positives. Therefore we check to see what element we are currently evaluating and if it is the same as our property we do not add the property to the list.
+
+            // here handle null probably (or otherwise execution)
+            if (_warnForUninitializedProperties && CurrentlyEvaluatingPropertyElementName != null)
+            {
+                // Check to see if the property name does not match the property we are currently evaluating, note the property we are currently evaluating in the element name, this means no $( or )
+                if (!MSBuildNameIgnoreCaseComparer.Default.Equals(CurrentlyEvaluatingPropertyElementName, propertyName, startIndex, endIndex - startIndex + 1))
+                {
+                    TryAdd(
+                        propertyName: propertyName.Substring(startIndex, endIndex - startIndex + 1),
+                        elementLocation);
+                }
+            }
+        }
+
+        private PropertyReadContext GetPropertyReadContext(string propertyName, int startIndex, int endIndex)
+        {
+            if (PropertyReadContext == PropertyReadContext.PropertyEvaluation &&
+                !string.IsNullOrEmpty(CurrentlyEvaluatingPropertyElementName) &&
+                MSBuildNameIgnoreCaseComparer.Default.Equals(CurrentlyEvaluatingPropertyElementName, propertyName,
+                    startIndex, endIndex - startIndex + 1))
+            {
+                return PropertyReadContext.PropertyEvaluationSelf;
+            }
+
+            return PropertyReadContext;
+        }
 
         internal void TryAdd(string propertyName, IElementLocation elementLocation)
         {
@@ -5531,15 +5617,6 @@ namespace Microsoft.Build.Evaluation
         }
 
         /// <summary>
-        ///  Are we currently supposed to warn if we used an uninitialized property.
-        /// </summary>
-        internal bool Warn
-        {
-            get;
-            set;
-        }
-
-        /// <summary>
         ///  What is the currently evaluating property element, this is so that we do not add a un initialized property if we are evaluating that property.
         /// </summary>
         internal string? CurrentlyEvaluatingPropertyElementName
@@ -5547,6 +5624,59 @@ namespace Microsoft.Build.Evaluation
             get;
             set;
         }
+
+        internal void CheckPreexistingUndefinedUsage(IElementWithLocation propertyElement, string evaluatedValue, LoggingContext loggingContext)
+        {
+            // If we are going to set a property to a value other than null or empty we need to check to see if it has been used
+            // during evaluation.
+            if (evaluatedValue.Length > 0 && _warnForUninitializedProperties)
+            {
+                // Is the property we are currently setting in the list of properties which have been used but not initialized
+                IElementLocation? elementWhichUsedProperty;
+                bool isPropertyInList = TryGetPropertyElementLocation(propertyElement.Name, out elementWhichUsedProperty);
+
+                if (isPropertyInList)
+                {
+                    // Once we are going to warn for a property once, remove it from the list so we do not add it again.
+                    RemoveProperty(propertyElement.Name);
+                    loggingContext.LogWarning(null, new BuildEventFileInfo(propertyElement.Location), "UsedUninitializedProperty", propertyElement.Name, elementWhichUsedProperty?.LocationString);
+                }
+            }
+
+            CurrentlyEvaluatingPropertyElementName = null;
+            PropertyReadContext = PropertyReadContext.Other;
+        }
+
+        private PropertyReadContext _propertyReadContext;
+        private PropertyReadContext _previousPropertyReadContext = PropertyReadContext.Other;
+        internal PropertyReadContext PropertyReadContext
+        {
+            private get => _propertyReadContext;
+            set
+            {
+                _previousPropertyReadContext = _propertyReadContext;
+                _propertyReadContext = value;
+            }
+        }
+
+        internal void ResetPropertyReadContext(bool popPrevious = true)
+        {
+            _propertyReadContext = popPrevious ? _previousPropertyReadContext : PropertyReadContext.Other;
+            _previousPropertyReadContext = PropertyReadContext.Other;
+        }
+    }
+
+    /// <summary>
+    /// Type of the context in which a property is read.
+    /// </summary>
+    internal enum PropertyReadContext
+    {
+        // we are not interested in distinguishing the item read etc.
+        Other,
+        ConditionEvaluation,
+        ConditionEvaluationWithOneSideEmpty,
+        PropertyEvaluation,
+        PropertyEvaluationSelf,
     }
 
     internal static class IntrinsicFunctionOverload
