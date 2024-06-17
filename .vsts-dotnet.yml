@@ -57,6 +57,11 @@ extends:
       # We generate SBOM ourselves, so don't need steps injected by 1ES.
       sbom:
         enabled: false
+      codeSignValidation:
+        enabled: true
+        break: true
+        # Exlude the test projects from the code sign validation
+        additionalTargetsGlobPattern: -|**\StringTools.UnitTests.net35\**;-|**\StringTools.UnitTests\**;-|**\Microsoft.Build.Engine.UnitTests\**;-|**\Microsoft.Build.Utilities.UnitTests\**;
 
     stages:
     - stage: build
