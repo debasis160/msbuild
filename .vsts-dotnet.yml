@@ -61,7 +61,7 @@ extends:
         enabled: true
         break: true
         # Exlude the test projects from the code sign validation
-        additionalTargetsGlobPattern: -|**\StringTools.UnitTests.net35\**;-|**\StringTools.UnitTests\**;-|**\Microsoft.Build.Engine.UnitTests\**;-|**\Microsoft.Build.Utilities.UnitTests\**;
+        additionalTargetsGlobPattern: -|**\StringTools.UnitTests.net35\**;-|**\StringTools.UnitTests\**;-|**\Microsoft.Build.Engine.UnitTests\**;-|**\Microsoft.Build.Utilities.UnitTests\**;-|**\Microsoft.Build.CommandLine.UnitTests\**;-|**\Microsoft.Build.BuildCheck.UnitTests\**;-|**\Microsoft.Build.Engine.OM.UnitTests\**;-|**\Microsoft.Build.Framework.UnitTests\**;-|**\Microsoft.Build.Tasks.UnitTests\**;
 
     stages:
     - stage: build
