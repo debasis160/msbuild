@@ -160,7 +160,7 @@ extends:
           condition: succeeded()
 
         # Required by Microsoft policy
-        - template: eng\common\templates-official\steps\generate-sbom.yml@self
+        # Skip tmp- template: eng\common\templates-official\steps\generate-sbom.yml@self
 
         # Publish OptProf configuration files
         - task: 1ES.PublishArtifactsDrop@1
