@@ -181,7 +181,6 @@ extends:
             channelName: $(VisualStudio.ChannelName)
             manifests: $(VisualStudio.SetupManifestList)
             outputFolder: '$(Build.SourcesDirectory)\artifacts\VSSetup\$(BuildConfiguration)\Insertion'
-            bootstrapperCoreVersion:
           displayName: 'OptProf - Build VS bootstrapper'
           condition: succeeded()
 
@@ -214,12 +213,12 @@ extends:
           condition: succeededOrFailed()
 
         # Publish bin folder to pipeline artifact     
-        # - task: 1ES.PublishPipelineArtifact@1
-        #  displayName: 'Publish Artifact: bin'
-        #  inputs:
-        #    path: 'artifacts\bin'
-        #    artifactName: bin
-        #  condition: succeededOrFailed()
+        - task: 1ES.PublishPipelineArtifact@1
+          displayName: 'Publish Artifact: bin'
+          inputs:
+            path: 'artifacts\bin'
+            artifactName: bin
+          condition: succeededOrFailed()
 
         # Publishes setup VSIXes to a drop.
         # Note: The insertion tool looks for the display name of this task in the logs.
