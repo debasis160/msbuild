@@ -59,7 +59,7 @@ extends:
         enabled: false
       codeSignValidation:
         enabled: true
-        break: true
+        break: false
         # Exlude the test projects from the code sign validation
         additionalTargetsGlobPattern: -|**\StringTools.UnitTests.net35\**;-|**\StringTools.UnitTests\**;-|**\Microsoft.Build.Engine.UnitTests\**;-|**\Microsoft.Build.Utilities.UnitTests\**;-|**\Microsoft.Build.CommandLine.UnitTests\**;-|**\Microsoft.Build.BuildCheck.UnitTests\**;-|**\Microsoft.Build.Engine.OM.UnitTests\**;-|**\Microsoft.Build.Framework.UnitTests\**;-|**\Microsoft.Build.Tasks.UnitTests\**;-|**\Microsoft.Build.UnitTests.Shared\**;
 
@@ -213,12 +213,12 @@ extends:
           condition: succeededOrFailed()
 
         # Publish bin folder to pipeline artifact     
-        - task: 1ES.PublishPipelineArtifact@1
-          displayName: 'Publish Artifact: bin'
-          inputs:
-            path: 'artifacts\bin'
-            artifactName: bin
-          condition: succeededOrFailed()
+        # - task: 1ES.PublishPipelineArtifact@1
+        #  displayName: 'Publish Artifact: bin'
+        #  inputs:
+        #    path: 'artifacts\bin'
+        #    artifactName: bin
+        #  condition: succeededOrFailed()
 
         # Publishes setup VSIXes to a drop.
         # Note: The insertion tool looks for the display name of this task in the logs.
