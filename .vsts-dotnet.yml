@@ -188,7 +188,7 @@ extends:
           displayName: Delete the file
           inputs:
             targetType: 'inline'
-            script: Get-ChildItem -Path ".\$(Build.SourcesDirectory)\artifacts\VSSetup\$(BuildConfiguration)\Insertion\bootstrapper" -Recurse -Filter "vs_enterprise.exe" | Remove-Item -Verbose
+            script: Get-ChildItem -Path "$(Build.SourcesDirectory)\artifacts\VSSetup\$(BuildConfiguration)\Insertion\bootstrapper" -Recurse -Filter "vs_enterprise.exe" | Remove-Item -Verbose
 
         # Publish run settings
         - task: PowerShell@2
