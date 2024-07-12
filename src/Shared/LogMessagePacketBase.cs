@@ -215,7 +215,7 @@ namespace Microsoft.Build.Shared
         /// Event is a <see cref="GeneratedFileUsedEventArgs"/>
         /// </summary>
         GeneratedFileUsedEvent = 34,
-        
+
         /// <summary>
         /// Event is <see cref="BuildCheckResultMessage"/>
         /// </summary>
@@ -435,7 +435,6 @@ namespace Microsoft.Build.Shared
 #if !TASKHOST && !MSBUILDENTRYPOINTEXE
                 if (_buildEvent is ProjectEvaluationStartedEventArgs
                     or ProjectEvaluationFinishedEventArgs
-                    or EnvironmentVariableReadEventArgs
                     or ResponseFileUsedEventArgs)
                 {
                     // switch to serialization methods that we provide in this file
@@ -623,8 +622,7 @@ namespace Microsoft.Build.Shared
                 LoggingEventType.TaskStartedEvent => new TaskStartedEventArgs(null, null, null, null, null),
                 LoggingEventType.TaskFinishedEvent => new TaskFinishedEventArgs(null, null, null, null, null, false),
                 LoggingEventType.TaskCommandLineEvent => new TaskCommandLineEventArgs(null, null, MessageImportance.Normal),
-                LoggingEventType.EnvironmentVariableReadEvent => new EnvironmentVariableReadEventArgs(),
-                LoggingEventType.ResponseFileUsedEvent => new ResponseFileUsedEventArgs(null),               
+                LoggingEventType.ResponseFileUsedEvent => new ResponseFileUsedEventArgs(null),
 
 #if !TASKHOST // MSBuildTaskHost is targeting Microsoft.Build.Framework.dll 3.5
                 LoggingEventType.AssemblyLoadEvent => new AssemblyLoadBuildEventArgs(),
@@ -652,6 +650,7 @@ namespace Microsoft.Build.Shared
                 LoggingEventType.BuildCheckErrorEvent => new BuildCheckResultError(),
                 LoggingEventType.BuildCheckAcquisitionEvent => new BuildCheckAcquisitionEventArgs(),
                 LoggingEventType.BuildCheckTracingEvent => new BuildCheckTracingEventArgs(),
+                LoggingEventType.EnvironmentVariableReadEvent => new EnvironmentVariableReadEventArgs(),
 #endif
                 _ => throw new InternalErrorException("Should not get to the default of GetBuildEventArgFromId ID: " + _eventType)
             };
@@ -879,15 +878,18 @@ namespace Microsoft.Build.Shared
                 case LoggingEventType.BuildWarningEvent:
                     WriteBuildWarningEventToStream((BuildWarningEventArgs)buildEvent, translator);
                     break;
+#if !TASKHOST
                 case LoggingEventType.EnvironmentVariableReadEvent:
                     WriteEnvironmentVariableReadEventArgs((EnvironmentVariableReadEventArgs)buildEvent, translator);
                     break;
+#endif
                 default:
                     ErrorUtilities.ThrowInternalError("Not Supported LoggingEventType {0}", eventType.ToString());
                     break;
             }
         }
 
+#if !TASKHOST
         /// <summary>
         /// Serializes EnvironmentVariableRead Event argument to the stream. Does not work properly on TaskHosts due to BuildEventContext serialization not being
         /// enabled on TaskHosts, but that shouldn't matter, as this should never be called from a TaskHost anyway.
@@ -908,6 +910,7 @@ namespace Microsoft.Build.Shared
             translator.Translate(ref context);
 #endif
         }
+#endif
 
         #region Writes to Stream
 
@@ -1241,11 +1244,14 @@ namespace Microsoft.Build.Shared
                 LoggingEventType.BuildMessageEvent => ReadBuildMessageEventFromStream(translator, message, helpKeyword, senderName),
                 LoggingEventType.ResponseFileUsedEvent => ReadResponseFileUsedEventFromStream(translator, message, helpKeyword, senderName),
                 LoggingEventType.BuildWarningEvent => ReadBuildWarningEventFromStream(translator, message, helpKeyword, senderName),
+#if !TASKHOST
                 LoggingEventType.EnvironmentVariableReadEvent => ReadEnvironmentVariableReadEventFromStream(translator, message, helpKeyword, senderName),
+#endif
                 _ => null,
             };
         }
 
+#if !TASKHOST
         /// <summary>
         /// Read and reconstruct an EnvironmentVariableReadEventArgs from the stream. This message should never be called from a TaskHost, so although the context translation does not work, that's ok.
         /// </summary>
@@ -1269,6 +1275,7 @@ namespace Microsoft.Build.Shared
 #endif
             return args;
         }
+#endif
 
         /// <summary>
         /// Read and reconstruct a BuildWarningEventArgs from the stream
