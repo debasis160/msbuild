@@ -34,7 +34,7 @@ variables:
     - name: SourceBranch
       value: ''
   - name: EnableReleaseOneLocBuild
-    value: true
+    value: true # Enable loc for vs17.12
   - name: Codeql.Enabled
     value: true
   - group: DotNet-MSBuild-SDLValidation-Params
@@ -215,14 +215,6 @@ extends:
             PathtoPublish: 'artifacts\log\$(BuildConfiguration)'
             ArtifactName: logs
           condition: succeededOrFailed()
-
-        # Publish bin folder to pipeline artifact     
-        #- task: 1ES.PublishPipelineArtifact@1
-        #  displayName: 'Publish Artifact: bin'
-        #  inputs:
-        #    path: 'artifacts\bin'
-        #    artifactName: bin
-        #  condition: succeededOrFailed()
 
         # Publishes setup VSIXes to a drop.
         # Note: The insertion tool looks for the display name of this task in the logs.
