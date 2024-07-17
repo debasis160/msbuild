@@ -60,7 +60,7 @@ extends:
       codeSignValidation:
         enabled: true
         break: true
-        additionalTargetsGlobPattern: -:f|**\artifacts\VSSetup\*\Insertion\bootstrapper\**\vs_enterprise.exe
+        additionalTargetsGlobPattern: -|**\artifacts\VSSetup\**\Insertion\bootstrapper\**\vs_enterprise.exe
 
     stages:
     - stage: build
